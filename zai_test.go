@@ -443,6 +443,39 @@ func TestRegister(t *testing.T) {
 	assert.True(t, sdk.ProviderRegistered("zai"))
 }
 
+func TestProviderInit_DefaultConfigWorks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-5.1",
+				"base_url": "https://api.z.ai/api/coding/paas/v4",
+			},
+		},
+	}
+
+	got, err := sdk.GetProvider("zai", cfg)
+	require.NoError(t, err)
+
+	p, ok := got.(*provider)
+	require.True(t, ok)
+	require.NotNil(t, p.client)
+	assert.NotNil(t, p.client.Transport)
+	assert.Equal(t, retry.Config{
+		MaxRetries: 5,
+		BaseDelay:  1 * time.Second,
+		MaxDelay:   30 * time.Second,
+		Multiplier: 2,
+		Jitter:     retry.JitterFull,
+	}, p.retry)
+	assert.Equal(t, "https://api.z.ai/api/coding/paas/v4", p.config.BaseURL)
+	assert.Equal(t, "test-key", p.config.APIKey)
+	assert.Equal(t, "glm-5.1", p.config.Model)
+	assert.Equal(t, true, p.config.ExtraBody["tool_stream"])
+}
+
 func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZAI_API_KEY", "test-key")

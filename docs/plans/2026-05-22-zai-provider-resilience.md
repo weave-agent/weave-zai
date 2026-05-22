@@ -62,11 +62,11 @@ Wire the Z.ai extension into shared provider HTTP and retry SDK support. This re
 - [x] run `go test ./...` - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify default provider config still works
-- [ ] verify provider-specific HTTP override is accepted
-- [ ] verify provider-specific retry override is accepted
-- [ ] verify invalid provider config returns clear initialization error
-- [ ] run `go test ./...`
+- [x] verify default provider config still works
+- [x] verify provider-specific HTTP override is accepted
+- [x] verify provider-specific retry override is accepted
+- [x] verify invalid provider config returns clear initialization error
+- [x] run `go test ./...`
 
 ## Technical Details
 Provider runtime shape:

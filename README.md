@@ -16,6 +16,38 @@ The `--name zai` ensures your fork shadows the official extension.
 weave install github.com/weave-agent/weave-zai --name zai
 ```
 
+## Configuration
+
+The provider reads `ZAI_API_KEY` for auth. It also supports optional `ZAI_MODEL` and `ZAI_BASE_URL` environment overrides.
+
+Z.ai uses the shared weave provider HTTP and retry settings. Defaults can be configured under `providers.defaults`; Z.ai-specific overrides go under `providers.zai`.
+
+```json
+{
+  "providers": {
+    "zai": {
+      "model": "glm-5.1",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "http": {
+        "dial_timeout": "10s",
+        "tls_handshake_timeout": "10s",
+        "response_header_timeout": "60s",
+        "idle_conn_timeout": "90s"
+      },
+      "retry": {
+        "max_retries": 5,
+        "base_delay": "1s",
+        "max_delay": "30s",
+        "multiplier": 2,
+        "jitter": "full"
+      }
+    }
+  }
+}
+```
+
+Duration values use Go duration strings such as `250ms`, `2s`, or `1m`. Retry jitter accepts `full` or `none`.
+
 ## Development
 
 ```bash

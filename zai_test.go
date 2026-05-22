@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/weave-agent/weave/sdk"
 	"github.com/weave-agent/weave/sdk/model"
 	"github.com/weave-agent/weave/sdk/retry"
+	"github.com/weave-agent/weave/settings"
 	"github.com/weave-agent/weave/utils/openaicompat"
 
 	"github.com/stretchr/testify/assert"
@@ -46,20 +49,43 @@ func (s stubConfig) ExtensionConfig(scope, name string, target any) error {
 	return nil
 }
 
-func newTestProvider(server *httptest.Server, model string) sdk.Provider {
+func newTestProvider(server *httptest.Server, model string) *provider {
 	if model == "" {
 		model = "glm-5.1"
 	}
 
+	retryConfig := retry.DefaultConfig()
+
 	return &provider{
 		client: server.Client(),
-		retry:  retry.DefaultConfig(),
 		config: openaicompat.ProviderConfig{
-			BaseURL: server.URL,
-			APIKey:  "test-key",
-			Model:   model,
+			BaseURL:     server.URL,
+			APIKey:      "test-key",
+			Model:       model,
+			RetryConfig: &retryConfig,
 		},
 	}
+}
+
+func loadTestFullConfig(t *testing.T, body string) *settings.FullConfig {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".weave"), 0o750))
+
+	projectDir := t.TempDir()
+	settingsDir := filepath.Join(projectDir, ".weave")
+	require.NoError(t, os.MkdirAll(settingsDir, 0o750))
+
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	require.NoError(t, os.WriteFile(settingsPath, []byte(body), 0o600))
+
+	cfg, err := settings.LoadFullConfig(settingsPath)
+	require.NoError(t, err)
+	cfg.SetProjectDir(projectDir)
+
+	return cfg
 }
 
 type headerRoundTripper struct {
@@ -260,14 +286,15 @@ func TestStream_UsesConfiguredRetryConfig(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1").(*provider)
-	p.retry = retry.Config{
+	p := newTestProvider(server, "glm-5.1")
+	retryConfig := retry.Config{
 		MaxRetries: 0,
 		BaseDelay:  1 * time.Millisecond,
 		MaxDelay:   1 * time.Millisecond,
 		Multiplier: 1,
 		Jitter:     retry.JitterNone,
 	}
+	p.config.RetryConfig = &retryConfig
 
 	_, err := p.Stream(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
@@ -293,7 +320,7 @@ func TestStream_UsesConfiguredHTTPClient(t *testing.T) {
 	defer server.Close()
 
 	baseClient := server.Client()
-	p := newTestProvider(server, "glm-5.1").(*provider)
+	p := newTestProvider(server, "glm-5.1")
 	p.client = &http.Client{
 		Transport: headerRoundTripper{base: baseClient.Transport},
 	}
@@ -444,17 +471,9 @@ func TestRegister(t *testing.T) {
 }
 
 func TestProviderInit_DefaultConfigWorks(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZAI_API_KEY", "test-key")
 
-	cfg := stubConfig{
-		providers: map[string]map[string]any{
-			"zai": {
-				"model":    "glm-5.1",
-				"base_url": "https://api.z.ai/api/coding/paas/v4",
-			},
-		},
-	}
+	cfg := loadTestFullConfig(t, `{}`)
 
 	got, err := sdk.GetProvider("zai", cfg)
 	require.NoError(t, err)
@@ -463,13 +482,14 @@ func TestProviderInit_DefaultConfigWorks(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, p.client)
 	assert.NotNil(t, p.client.Transport)
+	require.NotNil(t, p.config.RetryConfig)
 	assert.Equal(t, retry.Config{
 		MaxRetries: 5,
 		BaseDelay:  1 * time.Second,
 		MaxDelay:   30 * time.Second,
 		Multiplier: 2,
 		Jitter:     retry.JitterFull,
-	}, p.retry)
+	}, *p.config.RetryConfig)
 	assert.Equal(t, "https://api.z.ai/api/coding/paas/v4", p.config.BaseURL)
 	assert.Equal(t, "test-key", p.config.APIKey)
 	assert.Equal(t, "glm-5.1", p.config.Model)
@@ -516,11 +536,12 @@ func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
 	assert.Equal(t, 2*time.Second, transport.ResponseHeaderTimeout)
 	assert.Equal(t, 3*time.Second, transport.IdleConnTimeout)
 
-	assert.Equal(t, 2, p.retry.MaxRetries)
-	assert.Equal(t, 250*time.Millisecond, p.retry.BaseDelay)
-	assert.Equal(t, 5*time.Second, p.retry.MaxDelay)
-	assert.InDelta(t, 1.5, p.retry.Multiplier, 0.0001)
-	assert.Equal(t, retry.JitterNone, p.retry.Jitter)
+	require.NotNil(t, p.config.RetryConfig)
+	assert.Equal(t, 2, p.config.RetryConfig.MaxRetries)
+	assert.Equal(t, 250*time.Millisecond, p.config.RetryConfig.BaseDelay)
+	assert.Equal(t, 5*time.Second, p.config.RetryConfig.MaxDelay)
+	assert.InDelta(t, 1.5, p.config.RetryConfig.Multiplier, 0.0001)
+	assert.Equal(t, retry.JitterNone, p.config.RetryConfig.Jitter)
 
 	assert.Equal(t, "https://example.test/api", p.config.BaseURL)
 	assert.Equal(t, "test-key", p.config.APIKey)
@@ -531,6 +552,56 @@ func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
 	p.config.ModifyRequest(body, &model.StreamOptions{ThinkingLevel: model.ThinkingLow})
 	assert.Equal(t, true, body["enable_thinking"])
 	assert.NotContains(t, body, "reasoning_effort")
+}
+
+func TestProviderInit_CustomRetryConfigUsedByStream(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseStream(
+			sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+			sseChunk(openaicompat.ChunkDelta{}, new("stop")),
+			sseDone(),
+		))
+	}))
+	defer server.Close()
+
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-5.1",
+				"base_url": server.URL,
+				"retry": map[string]any{
+					"max_retries": 0,
+					"base_delay":  "1ms",
+					"max_delay":   "1ms",
+					"multiplier":  1,
+					"jitter":      "none",
+				},
+			},
+		},
+	}
+
+	got, err := sdk.GetProvider("zai", cfg)
+	require.NoError(t, err)
+
+	_, err = got.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited")
+	assert.Equal(t, 1, attempts)
 }
 
 func TestProviderInit_InvalidHTTPConfigFails(t *testing.T) {

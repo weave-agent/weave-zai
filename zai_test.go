@@ -11,11 +11,40 @@ import (
 	"time"
 
 	"github.com/weave-agent/weave/sdk"
+	"github.com/weave-agent/weave/sdk/model"
+	"github.com/weave-agent/weave/sdk/retry"
 	"github.com/weave-agent/weave/utils/openaicompat"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type stubConfig struct {
+	providers map[string]map[string]any
+	sdk.NoopConfig
+}
+
+func (s stubConfig) ExtensionConfig(scope, name string, target any) error {
+	if scope != "providers" {
+		return fmt.Errorf("unexpected scope %q", scope)
+	}
+
+	section, ok := s.providers[name]
+	if !ok {
+		return nil
+	}
+
+	data, err := json.Marshal(section)
+	if err != nil {
+		return fmt.Errorf("marshal stub config: %w", err)
+	}
+
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("unmarshal stub config: %w", err)
+	}
+
+	return nil
+}
 
 func newTestProvider(server *httptest.Server, model string) sdk.Provider {
 	if model == "" {
@@ -24,6 +53,7 @@ func newTestProvider(server *httptest.Server, model string) sdk.Provider {
 
 	return &provider{
 		client: server.Client(),
+		retry:  retry.DefaultConfig(),
 		config: openaicompat.ProviderConfig{
 			BaseURL: server.URL,
 			APIKey:  "test-key",
@@ -332,4 +362,105 @@ func TestStream_SendsCorrectBaseURL(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	assert.True(t, sdk.ProviderRegistered("zai"))
+}
+
+func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	maxRetries := 2
+	multiplier := 1.5
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-custom",
+				"base_url": "https://example.test/api",
+				"http": map[string]any{
+					"tls_handshake_timeout":   "1500ms",
+					"response_header_timeout": "2s",
+					"idle_conn_timeout":       "3s",
+				},
+				"retry": map[string]any{
+					"max_retries": &maxRetries,
+					"base_delay":  "250ms",
+					"max_delay":   "5s",
+					"multiplier":  &multiplier,
+					"jitter":      "none",
+				},
+			},
+		},
+	}
+
+	got, err := sdk.GetProvider("zai", cfg)
+	require.NoError(t, err)
+
+	p, ok := got.(*provider)
+	require.True(t, ok)
+	require.NotNil(t, p.client)
+
+	transport, ok := p.client.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Equal(t, 1500*time.Millisecond, transport.TLSHandshakeTimeout)
+	assert.Equal(t, 2*time.Second, transport.ResponseHeaderTimeout)
+	assert.Equal(t, 3*time.Second, transport.IdleConnTimeout)
+
+	assert.Equal(t, 2, p.retry.MaxRetries)
+	assert.Equal(t, 250*time.Millisecond, p.retry.BaseDelay)
+	assert.Equal(t, 5*time.Second, p.retry.MaxDelay)
+	assert.InDelta(t, 1.5, p.retry.Multiplier, 0.0001)
+	assert.Equal(t, retry.JitterNone, p.retry.Jitter)
+
+	assert.Equal(t, "https://example.test/api", p.config.BaseURL)
+	assert.Equal(t, "test-key", p.config.APIKey)
+	assert.Equal(t, "glm-custom", p.config.Model)
+	assert.Equal(t, true, p.config.ExtraBody["tool_stream"])
+
+	body := map[string]any{"reasoning_effort": "high"}
+	p.config.ModifyRequest(body, &model.StreamOptions{ThinkingLevel: model.ThinkingLow})
+	assert.Equal(t, true, body["enable_thinking"])
+	assert.NotContains(t, body, "reasoning_effort")
+}
+
+func TestProviderInit_InvalidHTTPConfigFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-custom",
+				"base_url": "https://example.test/api",
+				"http": map[string]any{
+					"response_header_timeout": "not-a-duration",
+				},
+			},
+		},
+	}
+
+	_, err := sdk.GetProvider("zai", cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zai: resolve HTTP config")
+	assert.Contains(t, err.Error(), "invalid response_header_timeout")
+}
+
+func TestProviderInit_InvalidRetryConfigFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-custom",
+				"base_url": "https://example.test/api",
+				"retry": map[string]any{
+					"jitter": "sideways",
+				},
+			},
+		},
+	}
+
+	_, err := sdk.GetProvider("zai", cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zai: resolve retry config")
+	assert.Contains(t, err.Error(), "invalid jitter")
 }

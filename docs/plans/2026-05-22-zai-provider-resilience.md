@@ -46,13 +46,13 @@ Wire the Z.ai extension into shared provider HTTP and retry SDK support. This re
 ## Implementation Steps
 
 ### Task 1: Resolve provider runtime at initialization
-- [ ] update `zai.go` to resolve `providerhttp.ForProvider(cfg, "zai")`
-- [ ] update `zai.go` to resolve `providerretry.ForProvider(cfg, "zai")`
-- [ ] store HTTP client and retry config in provider state
-- [ ] preserve existing API key, model, base URL, extra body, and thinking mutation behavior
-- [ ] write tests for provider init with custom HTTP/retry config
-- [ ] write tests for invalid HTTP/retry config failing provider init
-- [ ] run `go test ./...` - must pass before next task
+- [x] update `zai.go` to resolve `providerhttp.ForProvider(cfg, "zai")`
+- [x] update `zai.go` to resolve `providerretry.ForProvider(cfg, "zai")`
+- [x] store HTTP client and retry config in provider state
+- [x] preserve existing API key, model, base URL, extra body, and thinking mutation behavior
+- [x] write tests for provider init with custom HTTP/retry config
+- [x] write tests for invalid HTTP/retry config failing provider init
+- [x] run `go test ./...` - must pass before next task
 
 ### Task 2: Pass explicit retry config to OpenAI-compatible stream
 - [ ] update `Stream` call to pass configured retry policy to `openaicompat.Stream`

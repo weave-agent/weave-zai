@@ -8,6 +8,9 @@ import (
 
 	"github.com/weave-agent/weave/sdk"
 	"github.com/weave-agent/weave/sdk/model"
+	"github.com/weave-agent/weave/sdk/providerhttp"
+	"github.com/weave-agent/weave/sdk/providerretry"
+	"github.com/weave-agent/weave/sdk/retry"
 	openaicompat "github.com/weave-agent/weave/utils/openaicompat"
 )
 
@@ -24,6 +27,7 @@ type AuthConfig struct {
 
 type provider struct {
 	client *http.Client
+	retry  retry.Config
 	config openaicompat.ProviderConfig
 }
 
@@ -33,8 +37,19 @@ func init() {
 			return nil, errors.New("zai: API key required (set ZAI_API_KEY)")
 		}
 
+		client, _, err := providerhttp.ForProvider(cfg, "zai")
+		if err != nil {
+			return nil, fmt.Errorf("zai: resolve HTTP config: %w", err)
+		}
+
+		retryConfig, _, err := providerretry.ForProvider(cfg, "zai")
+		if err != nil {
+			return nil, fmt.Errorf("zai: resolve retry config: %w", err)
+		}
+
 		return &provider{
-			client: &http.Client{},
+			client: client,
+			retry:  retryConfig,
 			config: openaicompat.ProviderConfig{
 				BaseURL: zc.BaseURL,
 				APIKey:  a.APIKey,

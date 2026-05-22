@@ -69,7 +69,10 @@ func init() {
 }
 
 func (p *provider) Stream(ctx context.Context, req sdk.ProviderRequest, opts ...model.StreamOption) (<-chan sdk.ProviderEvent, error) {
-	ch, err := openaicompat.Stream(ctx, p.client, p.config, req, opts...)
+	config := p.config
+	config.RetryConfig = &p.retry
+
+	ch, err := openaicompat.Stream(ctx, p.client, config, req, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("zai: %w", err)
 	}

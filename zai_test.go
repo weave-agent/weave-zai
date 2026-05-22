@@ -62,6 +62,16 @@ func newTestProvider(server *httptest.Server, model string) sdk.Provider {
 	}
 }
 
+type headerRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (h headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("X-Zai-Test-Transport", "configured")
+
+	return h.base.RoundTrip(req)
+}
+
 func collectEvents(t *testing.T, ch <-chan sdk.ProviderEvent) []sdk.ProviderEvent {
 	t.Helper()
 
@@ -226,6 +236,75 @@ func TestStream_APIError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid API key")
+}
+
+func TestStream_UsesConfiguredRetryConfig(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseStream(
+			sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+			sseChunk(openaicompat.ChunkDelta{}, new("stop")),
+			sseDone(),
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1").(*provider)
+	p.retry = retry.Config{
+		MaxRetries: 0,
+		BaseDelay:  1 * time.Millisecond,
+		MaxDelay:   1 * time.Millisecond,
+		Multiplier: 1,
+		Jitter:     retry.JitterNone,
+	}
+
+	_, err := p.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited")
+	assert.Equal(t, 1, attempts)
+}
+
+func TestStream_UsesConfiguredHTTPClient(t *testing.T) {
+	var receivedTransportHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedTransportHeader = r.Header.Get("X-Zai-Test-Transport")
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseStream(
+			sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+			sseChunk(openaicompat.ChunkDelta{}, new("stop")),
+			sseDone(),
+		))
+	}))
+	defer server.Close()
+
+	baseClient := server.Client()
+	p := newTestProvider(server, "glm-5.1").(*provider)
+	p.client = &http.Client{
+		Transport: headerRoundTripper{base: baseClient.Transport},
+	}
+
+	ch, err := p.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+	collectEvents(t, ch)
+
+	assert.Equal(t, "configured", receivedTransportHeader)
 }
 
 func TestStream_WithTools(t *testing.T) {

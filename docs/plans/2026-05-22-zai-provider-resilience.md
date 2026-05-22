@@ -55,11 +55,11 @@ Wire the Z.ai extension into shared provider HTTP and retry SDK support. This re
 - [x] run `go test ./...` - must pass before next task
 
 ### Task 2: Pass explicit retry config to OpenAI-compatible stream
-- [ ] update `Stream` call to pass configured retry policy to `openaicompat.Stream`
-- [ ] update tests for any changed `openaicompat.Stream` signature
-- [ ] verify no production path creates bare `&http.Client{}`
-- [ ] write tests proving stream uses configured runtime where practical
-- [ ] run `go test ./...` - must pass before next task
+- [x] update `Stream` call to pass configured retry policy to `openaicompat.Stream`
+- [x] update tests for any changed `openaicompat.Stream` signature
+- [x] verify no production path creates bare `&http.Client{}`
+- [x] write tests proving stream uses configured runtime where practical
+- [x] run `go test ./...` - must pass before next task
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify default provider config still works

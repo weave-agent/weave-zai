@@ -24,6 +24,12 @@ const (
 	maxTokenizerBodySize = 64 * 1024
 )
 
+var supportedTokenizerModels = map[string]struct{}{
+	"glm-4.5":  {},
+	"glm-4.6":  {},
+	"glm-4.6v": {},
+}
+
 // ZaiConfig holds per-provider configuration for the Z.ai provider.
 type ZaiConfig struct {
 	Model            string `json:"model" default:"glm-5.1" env:"ZAI_MODEL" description:"Model name"`
@@ -117,6 +123,10 @@ func (p *provider) CountTokens(ctx context.Context, req sdk.ProviderRequest, opt
 
 	if !tokenizerMessagesCountable(messages) {
 		return sdk.TokenCount{}, errors.New("zai: tokenizer requires at least one user message")
+	}
+
+	if !tokenizerModelSupported(mdl) {
+		return sdk.TokenCount{}, fmt.Errorf("zai: tokenizer does not support model %q", mdl)
 	}
 
 	body := map[string]any{
@@ -296,6 +306,12 @@ func tokenizerMessagesCountable(messages []openaicompat.ChatMessage) bool {
 	}
 
 	return false
+}
+
+func tokenizerModelSupported(modelName string) bool {
+	_, ok := supportedTokenizerModels[modelName]
+
+	return ok
 }
 
 func tokenizerToolCallContent(tc sdk.ToolCall) (string, error) {

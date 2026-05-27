@@ -58,8 +58,8 @@
 
 ### Task 2: Evaluate provider count-token support
 - [x] verify whether Z.ai exposes a compatible token count endpoint or deterministic tokenizer guidance
-- [x] implement `sdk.TokenCounter` only if a supported count mechanism exists
-- [x] N/A: unsupported-tokenizer fallback documentation was not needed because Z.ai exposes `/tokenizer`
+- [x] implement `sdk.TokenCounter` only for models supported by Z.ai's tokenizer endpoint
+- [x] document unsupported-tokenizer behavior for models not accepted by `/tokenizer`
 - [x] write tests for count success/error path or unsupported fallback behavior
 - [x] write tests preserving thinking request modifications in any count path
 - [x] run `go test ./...` - must pass before next task

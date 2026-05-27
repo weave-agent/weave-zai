@@ -497,7 +497,7 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		SystemPrompt: "You are helpful.",
 		Messages:     []sdk.Message{sdk.NewUserMessage("hi")},
@@ -513,13 +513,13 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 				},
 			},
 		},
-	}, model.WithModel("glm-custom"))
+	}, model.WithModel("glm-4.6v"))
 	require.NoError(t, err)
 
 	require.NoError(t, decodeErr)
 	assert.Equal(t, "/tokenizer", receivedPath)
 	assert.Equal(t, "Bearer test-key", receivedAuth)
-	assert.Equal(t, "glm-custom", receivedBody["model"])
+	assert.Equal(t, "glm-4.6v", receivedBody["model"])
 	assert.NotContains(t, receivedBody, "tool_stream")
 	require.IsType(t, []any{}, receivedBody["messages"])
 	messages := receivedBody["messages"].([]any)
@@ -531,6 +531,26 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	assert.Zero(t, count.OutputTokens)
 	assert.Equal(t, sdk.TokenCountSourceTokenizer, count.Source)
 	assert.InDelta(t, 0.95, count.Confidence, 0.0001)
+}
+
+func TestCountTokens_ReturnsErrorBeforeRequestWhenModelUnsupported(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), `tokenizer does not support model "glm-5.1"`)
+	assert.Zero(t, requests)
 }
 
 func TestCountTokens_UsesConfiguredTokenizerBaseURL(t *testing.T) {
@@ -560,7 +580,7 @@ func TestCountTokens_UsesConfiguredTokenizerBaseURL(t *testing.T) {
 		config: openaicompat.ProviderConfig{
 			BaseURL: chatServer.URL,
 			APIKey:  "test-key",
-			Model:   "glm-5.1",
+			Model:   "glm-4.6",
 		},
 	}
 
@@ -587,7 +607,7 @@ func TestCountTokens_ConvertsToolMessagesForTokenizer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{
 			sdk.NewUserMessage("run ls"),
@@ -628,7 +648,7 @@ func TestCountTokens_ReturnsErrorBeforeRequestWhenMessagesAreNotCountable(t *tes
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		SystemPrompt: "You are helpful.",
 	})
@@ -648,7 +668,7 @@ func TestCountTokens_ReturnsErrorBeforeRequestForAssistantOnlyMessages(t *testin
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{
 			{Role: sdk.RoleAssistant, Content: "hello"},
@@ -667,7 +687,7 @@ func TestCountTokens_ReturnsErrorWhenPromptTokensMissing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
@@ -682,7 +702,7 @@ func TestCountTokens_ReturnsErrorWhenTokenizerResponseIsInvalidJSON(t *testing.T
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
@@ -697,7 +717,7 @@ func TestCountTokens_ReturnsErrorWhenTokenizerCountIsZero(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
@@ -712,7 +732,7 @@ func TestCountTokens_ReturnsTokenizerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
@@ -733,7 +753,7 @@ func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	p.config.ModifyRequest = func(body map[string]any, so *model.StreamOptions) {
 		body["reasoning_effort"] = "high"
 		if so.ThinkingLevel != model.ThinkingOff {
@@ -771,7 +791,7 @@ func TestCountTokens_UsesConfiguredRetryConfig(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	retryConfig := retry.Config{
 		MaxRetries: 1,
 		BaseDelay:  1 * time.Millisecond,
@@ -796,7 +816,7 @@ func TestCountTokens_RespectsContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProvider(server, "glm-5.1")
+	p := newTestProvider(server, "glm-4.6")
 	retryConfig := retry.Config{
 		MaxRetries: 5,
 		BaseDelay:  time.Hour,
@@ -1100,7 +1120,7 @@ func TestProviderInit_CustomRetryConfigUsedByCountTokens(t *testing.T) {
 	cfg := stubConfig{
 		providers: map[string]map[string]any{
 			"zai": {
-				"model":             "glm-5.1",
+				"model":             "glm-4.6",
 				"base_url":          server.URL,
 				countBaseURLSetting: server.URL,
 				"retry": map[string]any{

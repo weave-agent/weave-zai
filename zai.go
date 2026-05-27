@@ -105,11 +105,18 @@ func (p *provider) CountTokens(ctx context.Context, req sdk.ProviderRequest, opt
 		mdl = p.config.Model
 	}
 
-	messages := convertTokenizerMessages(req.Messages)
+	messages, err := convertTokenizerMessages(req.Messages)
+	if err != nil {
+		return sdk.TokenCount{}, err
+	}
 
 	if req.SystemPrompt != "" {
 		sysMsg := openaicompat.ChatMessage{Role: "system", Content: req.SystemPrompt}
 		messages = append([]openaicompat.ChatMessage{sysMsg}, messages...)
+	}
+
+	if !tokenizerMessagesCountable(messages) {
+		return sdk.TokenCount{}, errors.New("zai: tokenizer requires at least one user message")
 	}
 
 	body := map[string]any{
@@ -231,7 +238,7 @@ func (p *provider) doTokenizerRequest(ctx context.Context, reqBody []byte) ([]by
 	}
 }
 
-func convertTokenizerMessages(msgs []sdk.Message) []openaicompat.ChatMessage {
+func convertTokenizerMessages(msgs []sdk.Message) ([]openaicompat.ChatMessage, error) {
 	var result []openaicompat.ChatMessage
 
 	for _, msg := range msgs {
@@ -255,20 +262,80 @@ func convertTokenizerMessages(msgs []sdk.Message) []openaicompat.ChatMessage {
 			}
 
 			for _, tc := range msg.ToolCalls {
+				content, err := tokenizerToolCallContent(tc)
+				if err != nil {
+					return nil, err
+				}
+
 				result = append(result, openaicompat.ChatMessage{
 					Role:    "assistant",
-					Content: fmt.Sprintf("tool_call %s %s %v", tc.ID, tc.Name, tc.Arguments),
+					Content: content,
 				})
 			}
 		case sdk.RoleToolResult:
+			content, err := tokenizerToolResultContent(msg)
+			if err != nil {
+				return nil, err
+			}
+
 			result = append(result, openaicompat.ChatMessage{
 				Role:    "user",
-				Content: fmt.Sprint(msg.Content),
+				Content: content,
 			})
 		}
 	}
 
-	return result
+	return result, nil
+}
+
+func tokenizerMessagesCountable(messages []openaicompat.ChatMessage) bool {
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func tokenizerToolCallContent(tc sdk.ToolCall) (string, error) {
+	payload := struct {
+		ID        string `json:"id,omitempty"`
+		Name      string `json:"name"`
+		Arguments any    `json:"arguments,omitempty"`
+	}{
+		ID:        tc.ID,
+		Name:      tc.Name,
+		Arguments: tc.Arguments,
+	}
+
+	content, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("zai: marshal tokenizer tool call: %w", err)
+	}
+
+	return "tool_call " + string(content), nil
+}
+
+func tokenizerToolResultContent(msg sdk.Message) (string, error) {
+	payload := struct {
+		ToolCallID string `json:"tool_call_id,omitempty"`
+		ToolName   string `json:"tool_name,omitempty"`
+		IsError    bool   `json:"is_error,omitempty"`
+		Content    any    `json:"content"`
+	}{
+		ToolCallID: msg.ToolCallID,
+		ToolName:   msg.ToolName,
+		IsError:    msg.IsError,
+		Content:    msg.Content,
+	}
+
+	content, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("zai: marshal tokenizer tool result: %w", err)
+	}
+
+	return "tool_result " + string(content), nil
 }
 
 func tokenizerErrorType(code int) openaicompat.ErrorType {

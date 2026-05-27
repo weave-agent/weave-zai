@@ -612,8 +612,52 @@ func TestCountTokens_ConvertsToolMessagesForTokenizer(t *testing.T) {
 	require.Len(t, messages, 3)
 	assert.Equal(t, "user", messages[0].(map[string]any)["role"])
 	assert.Equal(t, "assistant", messages[1].(map[string]any)["role"])
+	assert.Equal(t, `tool_call {"id":"call_1","name":"bash","arguments":{"command":"ls"}}`, messages[1].(map[string]any)["content"])
 	assert.Equal(t, "user", messages[2].(map[string]any)["role"])
+	assert.Equal(t, `tool_result {"tool_call_id":"call_1","tool_name":"bash","content":"\u003ctool_output name=\"bash\"\u003e\nfile.txt\n\u003c/tool_output\u003e"}`, messages[2].(map[string]any)["content"])
 	assert.Equal(t, 55, count.InputTokens)
+}
+
+func TestCountTokens_ReturnsErrorBeforeRequestWhenMessagesAreNotCountable(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		SystemPrompt: "You are helpful.",
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "requires at least one user message")
+	assert.Zero(t, requests)
+}
+
+func TestCountTokens_ReturnsErrorBeforeRequestForAssistantOnlyMessages(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{
+			{Role: sdk.RoleAssistant, Content: "hello"},
+		},
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "requires at least one user message")
+	assert.Zero(t, requests)
 }
 
 func TestCountTokens_ReturnsErrorWhenPromptTokensMissing(t *testing.T) {

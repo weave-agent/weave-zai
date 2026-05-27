@@ -49,9 +49,9 @@ func (s stubConfig) ExtensionConfig(scope, name string, target any) error {
 	return nil
 }
 
-func newTestProvider(server *httptest.Server, model string) *provider {
-	if model == "" {
-		model = "glm-5.1"
+func newTestProvider(server *httptest.Server, modelName string) *provider {
+	if modelName == "" {
+		modelName = "glm-5.1"
 	}
 
 	retryConfig := retry.DefaultConfig()
@@ -61,10 +61,16 @@ func newTestProvider(server *httptest.Server, model string) *provider {
 		config: openaicompat.ProviderConfig{
 			BaseURL:     server.URL,
 			APIKey:      "test-key",
-			Model:       model,
+			Model:       modelName,
 			RetryConfig: &retryConfig,
 			ExtraBody: map[string]any{
 				"tool_stream": true,
+			},
+			ModifyRequest: func(body map[string]any, so *model.StreamOptions) {
+				if so.ThinkingLevel != model.ThinkingOff {
+					body["enable_thinking"] = true
+					delete(body, "reasoning_effort")
+				}
 			},
 		},
 	}
@@ -460,6 +466,118 @@ func TestStream_CachedTokenUsageDetail(t *testing.T) {
 	assert.Equal(t, 24, usages[0].InputTokens)
 	assert.Equal(t, 6, usages[0].OutputTokens)
 	assert.Equal(t, 19, usages[0].CacheReadTokens)
+}
+
+func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
+	var receivedPath string
+	var receivedAuth string
+	var receivedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedAuth = r.Header.Get("Authorization")
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":42,"total_tokens":42}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		SystemPrompt: "You are helpful.",
+		Messages:     []sdk.Message{sdk.NewUserMessage("hi")},
+		Tools: []sdk.ToolDef{
+			{
+				Name:        "bash",
+				Description: "Run a command",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"command": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}, model.WithModel("glm-custom"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "/tokenizer", receivedPath)
+	assert.Equal(t, "Bearer test-key", receivedAuth)
+	assert.Equal(t, "glm-custom", receivedBody["model"])
+	assert.NotContains(t, receivedBody, "tool_stream")
+	require.IsType(t, []any{}, receivedBody["messages"])
+	messages := receivedBody["messages"].([]any)
+	require.Len(t, messages, 2)
+	assert.Equal(t, "system", messages[0].(map[string]any)["role"])
+	assert.Equal(t, "user", messages[1].(map[string]any)["role"])
+	require.IsType(t, []any{}, receivedBody["tools"])
+	assert.Equal(t, 42, count.InputTokens)
+	assert.Zero(t, count.OutputTokens)
+	assert.Equal(t, sdk.TokenCountSourceTokenizer, count.Source)
+	assert.Equal(t, 0.95, count.Confidence)
+}
+
+func TestCountTokens_UsesTotalTokensFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"total_tokens":17}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 17, count.InputTokens)
+	assert.Equal(t, sdk.TokenCountSourceTokenizer, count.Source)
+}
+
+func TestCountTokens_ReturnsTokenizerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"model not supported","type":"invalid_request_error"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model not supported")
+}
+
+func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
+	var receivedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":12,"total_tokens":12}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	p.config.ModifyRequest = func(body map[string]any, so *model.StreamOptions) {
+		body["reasoning_effort"] = "high"
+		if so.ThinkingLevel != model.ThinkingOff {
+			body["enable_thinking"] = true
+			delete(body, "reasoning_effort")
+		}
+	}
+
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	}, model.WithThinkingLevel(model.ThinkingLow))
+	require.NoError(t, err)
+
+	assert.Equal(t, 12, count.InputTokens)
+	assert.Equal(t, true, receivedBody["enable_thinking"])
+	assert.NotContains(t, receivedBody, "reasoning_effort")
 }
 
 func TestStream_MultipleToolCalls(t *testing.T) {

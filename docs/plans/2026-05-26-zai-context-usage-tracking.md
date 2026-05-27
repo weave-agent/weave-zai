@@ -57,12 +57,12 @@
 - [x] run `go test ./...` - must pass before next task
 
 ### Task 2: Evaluate provider count-token support
-- [ ] verify whether Z.ai exposes a compatible token count endpoint or deterministic tokenizer guidance
-- [ ] implement `sdk.TokenCounter` only if a supported count mechanism exists
-- [ ] if unsupported, document reliance on agent calibrated heuristic
-- [ ] write tests for count success/error path or unsupported fallback behavior
-- [ ] write tests preserving thinking request modifications in any count path
-- [ ] run `go test ./...` - must pass before next task
+- [x] verify whether Z.ai exposes a compatible token count endpoint or deterministic tokenizer guidance
+- [x] implement `sdk.TokenCounter` only if a supported count mechanism exists
+- [x] if unsupported, document reliance on agent calibrated heuristic (not applicable - Z.ai exposes a tokenizer endpoint)
+- [x] write tests for count success/error path or unsupported fallback behavior
+- [x] write tests preserving thinking request modifications in any count path
+- [x] run `go test ./...` - must pass before next task
 
 ### Task 3: Verify model metadata for budget decisions
 - [ ] review Z.ai model `ContextWindow` and `MaxTokens` values against current provider docs

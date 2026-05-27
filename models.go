@@ -39,6 +39,16 @@ func RegisterModels() {
 		ContextWindow: 200000, MaxTokens: 131072,
 	})
 	model.RegisterModel(model.ModelDef{
+		ID: "glm-4.6", Provider: providerName,
+		DisplayName: "GLM-4.6", Reasoning: true,
+		ContextWindow: 200000, MaxTokens: 131072,
+	})
+	model.RegisterModel(model.ModelDef{
+		ID: "glm-4.5", Provider: providerName,
+		DisplayName: "GLM-4.5", Reasoning: true,
+		ContextWindow: 131072, MaxTokens: 98304,
+	})
+	model.RegisterModel(model.ModelDef{
 		ID: "glm-4.5-air", Provider: providerName,
 		DisplayName: "GLM-4.5 Air", Reasoning: true,
 		ContextWindow: 131072, MaxTokens: 98304,

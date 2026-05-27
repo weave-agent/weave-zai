@@ -25,9 +25,8 @@ const (
 )
 
 var supportedTokenizerModels = map[string]struct{}{
-	"glm-4.5":  {},
-	"glm-4.6":  {},
-	"glm-4.6v": {},
+	"glm-4.5": {},
+	"glm-4.6": {},
 }
 
 // ZaiConfig holds per-provider configuration for the Z.ai provider.
@@ -235,16 +234,14 @@ func (p *provider) doTokenizerRequest(ctx context.Context, reqBody []byte) ([]by
 		return nil, &openaicompat.Error{
 			StatusCode: resp.StatusCode,
 			Type:       tokenizerErrorType(resp.StatusCode),
-			Message:    errResp.Error.Message,
-			Body:       string(respBody),
+			Message:    fmt.Sprintf("tokenizer request failed with status %d", resp.StatusCode),
 		}
 	}
 
 	return nil, &openaicompat.Error{
 		StatusCode: resp.StatusCode,
 		Type:       tokenizerErrorType(resp.StatusCode),
-		Message:    fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)),
-		Body:       string(respBody),
+		Message:    fmt.Sprintf("tokenizer request failed with status %d", resp.StatusCode),
 	}
 }
 
@@ -252,6 +249,10 @@ func convertTokenizerMessages(msgs []sdk.Message) ([]openaicompat.ChatMessage, e
 	var result []openaicompat.ChatMessage
 
 	for _, msg := range msgs {
+		if err := msg.Validate(); err != nil {
+			return nil, fmt.Errorf("zai: convert tokenizer message: %w", err)
+		}
+
 		switch msg.Role {
 		case sdk.RoleUser:
 			result = append(result, openaicompat.ChatMessage{
@@ -292,6 +293,8 @@ func convertTokenizerMessages(msgs []sdk.Message) ([]openaicompat.ChatMessage, e
 				Role:    "user",
 				Content: content,
 			})
+		default:
+			return nil, fmt.Errorf("zai: unsupported tokenizer message role %q", msg.Role)
 		}
 	}
 

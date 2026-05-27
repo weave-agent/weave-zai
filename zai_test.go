@@ -513,13 +513,13 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 				},
 			},
 		},
-	}, model.WithModel("glm-4.6v"))
+	}, model.WithModel("glm-4.6"))
 	require.NoError(t, err)
 
 	require.NoError(t, decodeErr)
 	assert.Equal(t, "/tokenizer", receivedPath)
 	assert.Equal(t, "Bearer test-key", receivedAuth)
-	assert.Equal(t, "glm-4.6v", receivedBody["model"])
+	assert.Equal(t, "glm-4.6", receivedBody["model"])
 	assert.NotContains(t, receivedBody, "tool_stream")
 	require.IsType(t, []any{}, receivedBody["messages"])
 	messages := receivedBody["messages"].([]any)
@@ -550,6 +550,26 @@ func TestCountTokens_ReturnsErrorBeforeRequestWhenModelUnsupported(t *testing.T)
 	require.Error(t, err)
 
 	assert.Contains(t, err.Error(), `tokenizer does not support model "glm-5.1"`)
+	assert.Zero(t, requests)
+}
+
+func TestCountTokens_ReturnsErrorBeforeRequestWhenTokenizerModelUnregistered(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-4.6v")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), `tokenizer does not support model "glm-4.6v"`)
 	assert.Zero(t, requests)
 }
 
@@ -680,6 +700,29 @@ func TestCountTokens_ReturnsErrorBeforeRequestForAssistantOnlyMessages(t *testin
 	assert.Zero(t, requests)
 }
 
+func TestCountTokens_ReturnsErrorBeforeRequestForInvalidMessageRole(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-4.6")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{
+			sdk.NewUserMessage("hi"),
+			{Role: "developer", Content: "hidden"},
+		},
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), `invalid message role "developer"`)
+	assert.Zero(t, requests)
+}
+
 func TestCountTokens_ReturnsErrorWhenPromptTokensMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -737,7 +780,24 @@ func TestCountTokens_ReturnsTokenizerError(t *testing.T) {
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "model not supported")
+	assert.Contains(t, err.Error(), "tokenizer request failed with status 400")
+	assert.NotContains(t, err.Error(), "model not supported")
+}
+
+func TestCountTokens_DoesNotExposeTokenizerErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid prompt: secret-user-prompt"}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-4.6")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("secret-user-prompt")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tokenizer request failed with status 400")
+	assert.NotContains(t, err.Error(), "secret-user-prompt")
 }
 
 func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
@@ -945,6 +1005,41 @@ func TestGLM51ModelMetadata(t *testing.T) {
 	assert.Equal(t, 131072, m.MaxTokens)
 }
 
+func TestTokenizerModelMetadata(t *testing.T) {
+	tests := []struct {
+		id            string
+		displayName   string
+		contextWindow int
+		maxTokens     int
+	}{
+		{
+			id:            "glm-4.6",
+			displayName:   "GLM-4.6",
+			contextWindow: 200000,
+			maxTokens:     131072,
+		},
+		{
+			id:            "glm-4.5",
+			displayName:   "GLM-4.5",
+			contextWindow: 131072,
+			maxTokens:     98304,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			m, ok := model.GetModel(tt.id)
+			require.True(t, ok)
+
+			assert.Equal(t, providerName, m.Provider)
+			assert.Equal(t, tt.displayName, m.DisplayName)
+			assert.True(t, m.Reasoning)
+			assert.Equal(t, tt.contextWindow, m.ContextWindow)
+			assert.Equal(t, tt.maxTokens, m.MaxTokens)
+		})
+	}
+}
+
 func TestDefaultModelRegistration(t *testing.T) {
 	m, ok := model.DefaultModelForProvider(providerName)
 	require.True(t, ok)
@@ -1144,7 +1239,7 @@ func TestProviderInit_CustomRetryConfigUsedByCountTokens(t *testing.T) {
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rate limited")
+	assert.Contains(t, err.Error(), "tokenizer request failed with status 429")
 	assert.Equal(t, 1, attempts)
 }
 

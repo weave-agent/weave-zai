@@ -6,6 +6,7 @@ import (
 
 const providerName = "zai"
 
+//nolint:gochecknoinits // Model registration happens through package init hooks.
 func init() {
 	RegisterModels()
 }

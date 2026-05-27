@@ -104,7 +104,12 @@ type headerRoundTripper struct {
 func (h headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Header.Set("X-Zai-Test-Transport", "configured")
 
-	return h.base.RoundTrip(req)
+	resp, err := h.base.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("round trip test request: %w", err)
+	}
+
+	return resp, nil
 }
 
 func collectEvents(t *testing.T, ch <-chan sdk.ProviderEvent) []sdk.ProviderEvent {
@@ -425,6 +430,7 @@ func TestStream_UsageEventMapping(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var usages []sdk.ProviderUsage
+
 	for _, e := range events {
 		if e.Type == sdk.ProviderEventUsage {
 			usages = append(usages, e.Content.(sdk.ProviderUsage))
@@ -456,6 +462,7 @@ func TestStream_CachedTokenUsageDetail(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var usages []sdk.ProviderUsage
+
 	for _, e := range events {
 		if e.Type == sdk.ProviderEventUsage {
 			usages = append(usages, e.Content.(sdk.ProviderUsage))
@@ -470,13 +477,17 @@ func TestStream_CachedTokenUsageDetail(t *testing.T) {
 
 func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	var receivedPath string
+
 	var receivedAuth string
+
 	var receivedBody map[string]any
+
+	var decodeErr error
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path
 		receivedAuth = r.Header.Get("Authorization")
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		decodeErr = json.NewDecoder(r.Body).Decode(&receivedBody)
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":42,"total_tokens":42}}`)
@@ -502,6 +513,7 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	}, model.WithModel("glm-custom"))
 	require.NoError(t, err)
 
+	require.NoError(t, decodeErr)
 	assert.Equal(t, "/tokenizer", receivedPath)
 	assert.Equal(t, "Bearer test-key", receivedAuth)
 	assert.Equal(t, "glm-custom", receivedBody["model"])
@@ -515,7 +527,7 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	assert.Equal(t, 42, count.InputTokens)
 	assert.Zero(t, count.OutputTokens)
 	assert.Equal(t, sdk.TokenCountSourceTokenizer, count.Source)
-	assert.Equal(t, 0.95, count.Confidence)
+	assert.InDelta(t, 0.95, count.Confidence, 0.0001)
 }
 
 func TestCountTokens_UsesTotalTokensFallback(t *testing.T) {
@@ -553,8 +565,10 @@ func TestCountTokens_ReturnsTokenizerError(t *testing.T) {
 func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
 	var receivedBody map[string]any
 
+	var decodeErr error
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		decodeErr = json.NewDecoder(r.Body).Decode(&receivedBody)
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":12,"total_tokens":12}}`)
@@ -575,6 +589,7 @@ func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
 	}, model.WithThinkingLevel(model.ThinkingLow))
 	require.NoError(t, err)
 
+	require.NoError(t, decodeErr)
 	assert.Equal(t, 12, count.InputTokens)
 	assert.Equal(t, true, receivedBody["enable_thinking"])
 	assert.NotContains(t, receivedBody, "reasoning_effort")
@@ -830,6 +845,7 @@ func TestProviderInit_CustomRetryConfigUsedByStream(t *testing.T) {
 	t.Setenv("ZAI_API_KEY", "test-key")
 
 	attempts := 0
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 

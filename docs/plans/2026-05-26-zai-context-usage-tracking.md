@@ -72,11 +72,11 @@
 - [x] run `go test ./...` - must pass before next task
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify context usage telemetry is richer where provider data is available
-- [ ] verify no unsupported exact-count claims are exposed
-- [ ] run full provider tests with `go test ./...`
-- [ ] run `golangci-lint run` or repo lint command
-- [ ] verify no prompts or API keys are logged in accounting paths
+- [x] verify context usage telemetry is richer where provider data is available
+- [x] verify no unsupported exact-count claims are exposed
+- [x] run full provider tests with `go test ./...`
+- [x] run `golangci-lint run` or repo lint command
+- [x] verify no prompts or API keys are logged in accounting paths
 
 ### Task 5: Update documentation
 - [ ] update README or provider docs with Z.ai token accounting support level

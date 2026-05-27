@@ -45,6 +45,7 @@ type tokenizerResponse struct {
 	} `json:"usage"`
 }
 
+//nolint:gochecknoinits // Provider registration happens through package init hooks.
 func init() {
 	sdk.RegisterProvider[ZaiConfig, AuthConfig]("zai", func(cfg sdk.Config, zc ZaiConfig, a AuthConfig) (sdk.Provider, error) {
 		if a.APIKey == "" {

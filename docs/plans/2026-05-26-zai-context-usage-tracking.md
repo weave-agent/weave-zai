@@ -79,7 +79,7 @@
 - [x] verify no prompts or API keys are logged in accounting paths
 
 ### Task 5: Update documentation
-- [ ] update README or provider docs with Z.ai token accounting support level
+- [x] update README or provider docs with Z.ai token accounting support level
 
 ## Technical Details
 - Keep provider-specific request body modifications centralized in `ModifyRequest`.

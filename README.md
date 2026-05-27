@@ -48,6 +48,12 @@ Z.ai uses the shared weave provider HTTP and retry settings. Defaults can be con
 
 Duration values use Go duration strings such as `250ms`, `2s`, or `1m`. Retry jitter accepts `full` or `none`.
 
+## Token Accounting
+
+Z.ai reports generation usage through the OpenAI-compatible streaming response. When the provider includes compatible usage details, weave maps prompt tokens, completion tokens, and cached prompt tokens into provider usage telemetry.
+
+For preflight context budgeting, this extension implements exact input-token counting with Z.ai's `/tokenizer` endpoint. The count request uses the same model, messages, tools, system prompt, and thinking-mode request mutation as chat streaming. The tokenizer path does not add streaming-only options such as `tool_stream`.
+
 ## Development
 
 ```bash

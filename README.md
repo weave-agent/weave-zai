@@ -52,7 +52,11 @@ Duration values use Go duration strings such as `250ms`, `2s`, or `1m`. Retry ji
 
 Z.ai reports generation usage through the OpenAI-compatible streaming response. When the provider includes compatible usage details, weave maps prompt tokens, completion tokens, and cached prompt tokens into provider usage telemetry.
 
-For preflight context budgeting, this extension implements exact input-token counting with Z.ai's `/tokenizer` endpoint. The count request uses the same model, messages, tools, system prompt, and thinking-mode request mutation as chat streaming. The tokenizer path does not add streaming-only options such as `tool_stream`.
+For preflight context budgeting, this extension implements input-token counting with Z.ai's `/tokenizer` endpoint. The count request uses the same model, messages, tools, system prompt, and thinking-mode request mutation as chat streaming. The tokenizer path does not add streaming-only options such as `tool_stream`.
+
+Tokenizer counts are reported as input tokens with source `tokenizer`; output tokens are not estimated during preflight counting. If `/tokenizer` fails or returns a malformed response, `CountTokens` returns that error instead of falling back to a heuristic count.
+
+The default `glm-5.1` model metadata advertises a 204800-token context window and 131072 max output tokens for budget decisions.
 
 ## Development
 

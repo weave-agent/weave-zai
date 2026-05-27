@@ -59,7 +59,7 @@
 ### Task 2: Evaluate provider count-token support
 - [x] verify whether Z.ai exposes a compatible token count endpoint or deterministic tokenizer guidance
 - [x] implement `sdk.TokenCounter` only if a supported count mechanism exists
-- [x] if unsupported, document reliance on agent calibrated heuristic (not applicable - Z.ai exposes a tokenizer endpoint)
+- [x] N/A: unsupported-tokenizer fallback documentation was not needed because Z.ai exposes `/tokenizer`
 - [x] write tests for count success/error path or unsupported fallback behavior
 - [x] write tests preserving thinking request modifications in any count path
 - [x] run `go test ./...` - must pass before next task
@@ -75,7 +75,7 @@
 - [x] verify context usage telemetry is richer where provider data is available
 - [x] verify no unsupported exact-count claims are exposed
 - [x] run full provider tests with `go test ./...`
-- [x] run `golangci-lint run` or repo lint command
+- [x] ran `golangci-lint run ./...` successfully on 2026-05-27
 - [x] verify no prompts or API keys are logged in accounting paths
 
 ### Task 5: Update documentation

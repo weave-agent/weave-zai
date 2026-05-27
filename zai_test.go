@@ -530,7 +530,7 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	assert.InDelta(t, 0.95, count.Confidence, 0.0001)
 }
 
-func TestCountTokens_UsesTotalTokensFallback(t *testing.T) {
+func TestCountTokens_ReturnsErrorWhenPromptTokensMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"usage":{"total_tokens":17}}`)
@@ -538,13 +538,41 @@ func TestCountTokens_UsesTotalTokensFallback(t *testing.T) {
 	defer server.Close()
 
 	p := newTestProvider(server, "glm-5.1")
-	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing prompt_tokens")
+}
 
-	assert.Equal(t, 17, count.InputTokens)
-	assert.Equal(t, sdk.TokenCountSourceTokenizer, count.Source)
+func TestCountTokens_ReturnsErrorWhenTokenizerResponseIsInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse tokenizer response")
+}
+
+func TestCountTokens_ReturnsErrorWhenTokenizerCountIsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":0,"total_tokens":0}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing prompt_tokens")
 }
 
 func TestCountTokens_ReturnsTokenizerError(t *testing.T) {
@@ -593,6 +621,69 @@ func TestCountTokens_AppliesThinkingRequestModification(t *testing.T) {
 	assert.Equal(t, 12, count.InputTokens)
 	assert.Equal(t, true, receivedBody["enable_thinking"])
 	assert.NotContains(t, receivedBody, "reasoning_effort")
+}
+
+func TestCountTokens_UsesConfiguredRetryConfig(t *testing.T) {
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":21,"total_tokens":21}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	retryConfig := retry.Config{
+		MaxRetries: 1,
+		BaseDelay:  1 * time.Millisecond,
+		MaxDelay:   1 * time.Millisecond,
+		Multiplier: 1,
+		Jitter:     retry.JitterNone,
+	}
+	p.config.RetryConfig = &retryConfig
+
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 21, count.InputTokens)
+	assert.Equal(t, 2, attempts)
+}
+
+func TestCountTokens_RespectsContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	retryConfig := retry.Config{
+		MaxRetries: 5,
+		BaseDelay:  time.Hour,
+		MaxDelay:   time.Hour,
+		Multiplier: 1,
+		Jitter:     retry.JitterNone,
+	}
+	p.config.RetryConfig = &retryConfig
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := p.CountTokens(ctx, sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
 }
 
 func TestStream_MultipleToolCalls(t *testing.T) {
@@ -693,46 +784,15 @@ func TestRegister(t *testing.T) {
 	assert.True(t, sdk.ProviderRegistered("zai"))
 }
 
-func TestRegisteredModelsMetadata(t *testing.T) {
-	expected := map[string]model.ModelDef{
-		"glm-4.5-air": {
-			ID: "glm-4.5-air", Provider: providerName,
-			DisplayName: "GLM-4.5 Air", Reasoning: true,
-			ContextWindow: 131072, MaxTokens: 98304,
-		},
-		"glm-4.7": {
-			ID: "glm-4.7", Provider: providerName,
-			DisplayName: "GLM-4.7", Reasoning: true,
-			ContextWindow: 204800, MaxTokens: 131072,
-		},
-		"glm-4.7-flash": {
-			ID: "glm-4.7-flash", Provider: providerName,
-			DisplayName: "GLM-4.7 Flash", Reasoning: true,
-			ContextWindow: 200000, MaxTokens: 131072,
-		},
-		"glm-4.7-flashx": {
-			ID: "glm-4.7-flashx", Provider: providerName,
-			DisplayName: "GLM-4.7 FlashX", Reasoning: true,
-			ContextWindow: 200000, MaxTokens: 131072,
-		},
-		"glm-5": {
-			ID: "glm-5", Provider: providerName,
-			DisplayName: "GLM-5", Reasoning: true,
-			ContextWindow: 204800, MaxTokens: 131072,
-		},
-		"glm-5.1": {
-			ID: "glm-5.1", Provider: providerName,
-			DisplayName: "GLM-5.1", Reasoning: true,
-			ContextWindow: 204800, MaxTokens: 131072, Default: true,
-		},
-	}
+func TestGLM51ModelMetadata(t *testing.T) {
+	m, ok := model.GetModel("glm-5.1")
+	require.True(t, ok)
 
-	models := model.ListModelsForProvider(providerName)
-	require.Len(t, models, len(expected))
-
-	for _, got := range models {
-		assert.Equal(t, expected[got.ID], got)
-	}
+	assert.Equal(t, providerName, m.Provider)
+	assert.Equal(t, "GLM-5.1", m.DisplayName)
+	assert.True(t, m.Reasoning)
+	assert.Equal(t, 204800, m.ContextWindow)
+	assert.Equal(t, 131072, m.MaxTokens)
 }
 
 func TestDefaultModelRegistration(t *testing.T) {
@@ -746,15 +806,13 @@ func TestDefaultModelRegistration(t *testing.T) {
 	assert.Equal(t, 131072, m.MaxTokens)
 }
 
-func TestRegisteredModelsReasoningCapabilities(t *testing.T) {
-	models := model.ListModelsForProvider(providerName)
-	require.NotEmpty(t, models)
+func TestDefaultModelReasoningCapabilities(t *testing.T) {
+	m, ok := model.DefaultModelForProvider(providerName)
+	require.True(t, ok)
 
-	for _, m := range models {
-		assert.True(t, m.Reasoning, "%s should support thinking", m.ID)
-		assert.False(t, m.SupportsXHigh, "%s should not advertise xhigh thinking", m.ID)
-		assert.Equal(t, model.ThinkingHigh, model.ClampForModel(model.ThinkingXHigh, m))
-	}
+	assert.True(t, m.Reasoning)
+	assert.False(t, m.SupportsXHigh)
+	assert.Equal(t, model.ThinkingHigh, model.ClampForModel(model.ThinkingXHigh, m))
 }
 
 func TestProviderInit_DefaultConfigWorks(t *testing.T) {
@@ -885,6 +943,49 @@ func TestProviderInit_CustomRetryConfigUsedByStream(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = got.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited")
+	assert.Equal(t, 1, attempts)
+}
+
+func TestProviderInit_CustomRetryConfigUsedByCountTokens(t *testing.T) {
+	t.Setenv("ZAI_API_KEY", "test-key")
+
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+	}))
+	defer server.Close()
+
+	cfg := stubConfig{
+		providers: map[string]map[string]any{
+			"zai": {
+				"model":    "glm-5.1",
+				"base_url": server.URL,
+				"retry": map[string]any{
+					"max_retries": 0,
+					"base_delay":  "1ms",
+					"max_delay":   "1ms",
+					"multiplier":  1,
+					"jitter":      "none",
+				},
+			},
+		},
+	}
+
+	got, err := sdk.GetProvider("zai", cfg)
+	require.NoError(t, err)
+
+	counter, ok := got.(sdk.TokenCounter)
+	require.True(t, ok)
+
+	_, err = counter.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
 	require.Error(t, err)

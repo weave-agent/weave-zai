@@ -7,14 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 
 	"github.com/weave-agent/weave/sdk"
 	"github.com/weave-agent/weave/sdk/model"
 	"github.com/weave-agent/weave/sdk/providerhttp"
 	"github.com/weave-agent/weave/sdk/providerretry"
+	"github.com/weave-agent/weave/sdk/retry"
 	openaicompat "github.com/weave-agent/weave/utils/openaicompat"
 )
+
+const maxTokenizerBodySize = 64 * 1024
 
 // ZaiConfig holds per-provider configuration for the Z.ai provider.
 type ZaiConfig struct {
@@ -30,12 +34,6 @@ type AuthConfig struct {
 type provider struct {
 	client *http.Client
 	config openaicompat.ProviderConfig
-}
-
-type tokenizerRequest struct {
-	Model    string                     `json:"model"`
-	Messages []openaicompat.ChatMessage `json:"messages"`
-	Tools    []openaicompat.Tool        `json:"tools,omitempty"`
 }
 
 type tokenizerResponse struct {
@@ -100,39 +98,82 @@ func (p *provider) CountTokens(ctx context.Context, req sdk.ProviderRequest, opt
 		mdl = p.config.Model
 	}
 
-	tokenizerReq := tokenizerRequest{
-		Model:    mdl,
-		Messages: openaicompat.ConvertMessages(req.Messages),
-		Tools:    openaicompat.ConvertTools(req.Tools),
-	}
+	messages := openaicompat.ConvertMessages(req.Messages)
 
 	if req.SystemPrompt != "" {
 		sysMsg := openaicompat.ChatMessage{Role: "system", Content: req.SystemPrompt}
-		tokenizerReq.Messages = append([]openaicompat.ChatMessage{sysMsg}, tokenizerReq.Messages...)
+		messages = append([]openaicompat.ChatMessage{sysMsg}, messages...)
 	}
 
-	reqBody, err := json.Marshal(tokenizerReq)
+	body := map[string]any{
+		"model":    mdl,
+		"messages": messages,
+	}
+
+	if tools := openaicompat.ConvertTools(req.Tools); len(tools) > 0 {
+		body["tools"] = tools
+	}
+
+	if p.config.ModifyRequest != nil {
+		p.config.ModifyRequest(body, so)
+	}
+
+	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return sdk.TokenCount{}, fmt.Errorf("zai: marshal tokenizer request: %w", err)
 	}
 
-	if p.config.ModifyRequest != nil {
-		var bodyMap map[string]any
-		if unmarshalErr := json.Unmarshal(reqBody, &bodyMap); unmarshalErr != nil {
-			return sdk.TokenCount{}, fmt.Errorf("zai: unmarshal tokenizer request: %w", unmarshalErr)
-		}
-
-		p.config.ModifyRequest(bodyMap, so)
-
-		reqBody, err = json.Marshal(bodyMap)
-		if err != nil {
-			return sdk.TokenCount{}, fmt.Errorf("zai: marshal modified tokenizer request: %w", err)
-		}
+	rc := retry.DefaultConfig()
+	if p.config.RetryConfig != nil {
+		rc = *p.config.RetryConfig
 	}
 
+	respBody, err := p.doTokenizerRequestWithRetry(ctx, reqBody, rc)
+	if err != nil {
+		return sdk.TokenCount{}, err
+	}
+
+	var tokenizerResp tokenizerResponse
+	if err := json.Unmarshal(respBody, &tokenizerResp); err != nil {
+		return sdk.TokenCount{}, fmt.Errorf("zai: parse tokenizer response: %w", err)
+	}
+
+	inputTokens := tokenizerResp.Usage.PromptTokens
+	if inputTokens == 0 {
+		return sdk.TokenCount{}, errors.New("zai: tokenizer response missing prompt_tokens")
+	}
+
+	return sdk.TokenCount{
+		InputTokens: inputTokens,
+		Source:      sdk.TokenCountSourceTokenizer,
+		Confidence:  0.95,
+	}, nil
+}
+
+func (p *provider) doTokenizerRequestWithRetry(ctx context.Context, reqBody []byte, rc retry.Config) ([]byte, error) {
+	var respBody []byte
+
+	err := retry.Do(ctx, rc, isTokenizerRetriableError, func() error {
+		body, err := p.doTokenizerRequest(ctx, reqBody)
+		if err != nil {
+			return err
+		}
+
+		respBody = body
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("zai: tokenizer request after retry: %w", err)
+	}
+
+	return respBody, nil
+}
+
+func (p *provider) doTokenizerRequest(ctx context.Context, reqBody []byte) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.config.BaseURL+"/tokenizer", bytes.NewReader(reqBody))
 	if err != nil {
-		return sdk.TokenCount{}, fmt.Errorf("zai: create tokenizer request: %w", err)
+		return nil, fmt.Errorf("zai: create tokenizer request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -144,37 +185,63 @@ func (p *provider) CountTokens(ctx context.Context, req sdk.ProviderRequest, opt
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return sdk.TokenCount{}, fmt.Errorf("zai: tokenizer request: %w", err)
+		return nil, &openaicompat.Error{
+			Type:    openaicompat.ErrorTypeTransport,
+			Message: err.Error(),
+		}
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenizerBodySize))
 	if err != nil {
-		return sdk.TokenCount{}, fmt.Errorf("zai: read tokenizer response: %w", err)
+		return nil, fmt.Errorf("zai: read tokenizer response: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		var errResp openaicompat.ErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-			return sdk.TokenCount{}, fmt.Errorf("zai: tokenizer error: %s", errResp.Error.Message)
+	if resp.StatusCode == http.StatusOK {
+		return respBody, nil
+	}
+
+	var errResp openaicompat.ErrorResponse
+	if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
+		return nil, &openaicompat.Error{
+			StatusCode: resp.StatusCode,
+			Type:       tokenizerErrorType(resp.StatusCode),
+			Message:    errResp.Error.Message,
+			Body:       string(respBody),
 		}
-
-		return sdk.TokenCount{}, fmt.Errorf("zai: tokenizer error: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var tokenizerResp tokenizerResponse
-	if err := json.Unmarshal(respBody, &tokenizerResp); err != nil {
-		return sdk.TokenCount{}, fmt.Errorf("zai: parse tokenizer response: %w", err)
+	return nil, &openaicompat.Error{
+		StatusCode: resp.StatusCode,
+		Type:       tokenizerErrorType(resp.StatusCode),
+		Message:    fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)),
+		Body:       string(respBody),
+	}
+}
+
+func tokenizerErrorType(code int) openaicompat.ErrorType {
+	switch {
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return openaicompat.ErrorTypeAuth
+	case code == http.StatusTooManyRequests:
+		return openaicompat.ErrorTypeRateLimit
+	case code >= http.StatusInternalServerError:
+		return openaicompat.ErrorTypeServer
+	default:
+		return openaicompat.ErrorTypeClient
+	}
+}
+
+func isTokenizerRetriableError(err error) bool {
+	var apiErr *openaicompat.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.IsRetriable()
 	}
 
-	inputTokens := tokenizerResp.Usage.PromptTokens
-	if inputTokens == 0 {
-		inputTokens = tokenizerResp.Usage.TotalTokens
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
 	}
 
-	return sdk.TokenCount{
-		InputTokens: inputTokens,
-		Source:      sdk.TokenCountSourceTokenizer,
-		Confidence:  0.95,
-	}, nil
+	return false
 }

@@ -65,11 +65,11 @@
 - [x] run `go test ./...` - must pass before next task
 
 ### Task 3: Verify model metadata for budget decisions
-- [ ] review Z.ai model `ContextWindow` and `MaxTokens` values against current provider docs
-- [ ] update model metadata only with verified current values
-- [ ] write tests for default model and metadata registration
-- [ ] write tests for thinking/reasoning capability expectations
-- [ ] run `go test ./...` - must pass before next task
+- [x] review Z.ai model `ContextWindow` and `MaxTokens` values against current provider docs
+- [x] update model metadata only with verified current values
+- [x] write tests for default model and metadata registration
+- [x] write tests for thinking/reasoning capability expectations
+- [x] run `go test ./...` - must pass before next task
 
 ### Task 4: Verify acceptance criteria
 - [ ] verify context usage telemetry is richer where provider data is available

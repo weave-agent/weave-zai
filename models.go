@@ -15,7 +15,7 @@ func RegisterModels() {
 	model.RegisterModel(model.ModelDef{
 		ID: "glm-5.1", Provider: providerName,
 		DisplayName: "GLM-5.1", Reasoning: true,
-		ContextWindow: 200000, MaxTokens: 131072, Default: true,
+		ContextWindow: 204800, MaxTokens: 131072, Default: true,
 	})
 	model.RegisterModel(model.ModelDef{
 		ID: "glm-5", Provider: providerName,

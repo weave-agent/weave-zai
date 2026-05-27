@@ -678,6 +678,70 @@ func TestRegister(t *testing.T) {
 	assert.True(t, sdk.ProviderRegistered("zai"))
 }
 
+func TestRegisteredModelsMetadata(t *testing.T) {
+	expected := map[string]model.ModelDef{
+		"glm-4.5-air": {
+			ID: "glm-4.5-air", Provider: providerName,
+			DisplayName: "GLM-4.5 Air", Reasoning: true,
+			ContextWindow: 131072, MaxTokens: 98304,
+		},
+		"glm-4.7": {
+			ID: "glm-4.7", Provider: providerName,
+			DisplayName: "GLM-4.7", Reasoning: true,
+			ContextWindow: 204800, MaxTokens: 131072,
+		},
+		"glm-4.7-flash": {
+			ID: "glm-4.7-flash", Provider: providerName,
+			DisplayName: "GLM-4.7 Flash", Reasoning: true,
+			ContextWindow: 200000, MaxTokens: 131072,
+		},
+		"glm-4.7-flashx": {
+			ID: "glm-4.7-flashx", Provider: providerName,
+			DisplayName: "GLM-4.7 FlashX", Reasoning: true,
+			ContextWindow: 200000, MaxTokens: 131072,
+		},
+		"glm-5": {
+			ID: "glm-5", Provider: providerName,
+			DisplayName: "GLM-5", Reasoning: true,
+			ContextWindow: 204800, MaxTokens: 131072,
+		},
+		"glm-5.1": {
+			ID: "glm-5.1", Provider: providerName,
+			DisplayName: "GLM-5.1", Reasoning: true,
+			ContextWindow: 204800, MaxTokens: 131072, Default: true,
+		},
+	}
+
+	models := model.ListModelsForProvider(providerName)
+	require.Len(t, models, len(expected))
+
+	for _, got := range models {
+		assert.Equal(t, expected[got.ID], got)
+	}
+}
+
+func TestDefaultModelRegistration(t *testing.T) {
+	m, ok := model.DefaultModelForProvider(providerName)
+	require.True(t, ok)
+
+	assert.Equal(t, "glm-5.1", m.ID)
+	assert.Equal(t, "GLM-5.1", m.DisplayName)
+	assert.True(t, m.Default)
+	assert.Equal(t, 204800, m.ContextWindow)
+	assert.Equal(t, 131072, m.MaxTokens)
+}
+
+func TestRegisteredModelsReasoningCapabilities(t *testing.T) {
+	models := model.ListModelsForProvider(providerName)
+	require.NotEmpty(t, models)
+
+	for _, m := range models {
+		assert.True(t, m.Reasoning, "%s should support thinking", m.ID)
+		assert.False(t, m.SupportsXHigh, "%s should not advertise xhigh thinking", m.ID)
+		assert.Equal(t, model.ThinkingHigh, model.ClampForModel(model.ThinkingXHigh, m))
+	}
+}
+
 func TestProviderInit_DefaultConfigWorks(t *testing.T) {
 	t.Setenv("ZAI_API_KEY", "test-key")
 

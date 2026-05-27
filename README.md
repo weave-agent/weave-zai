@@ -28,6 +28,7 @@ Z.ai uses the shared weave provider HTTP and retry settings. Defaults can be con
     "zai": {
       "model": "glm-5.1",
       "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "tokenizer_base_url": "https://api.z.ai/api/paas/v4",
       "http": {
         "dial_timeout": "10s",
         "tls_handshake_timeout": "10s",
@@ -52,7 +53,9 @@ Duration values use Go duration strings such as `250ms`, `2s`, or `1m`. Retry ji
 
 Z.ai reports generation usage through the OpenAI-compatible streaming response. When the provider includes compatible usage details, weave maps prompt tokens, completion tokens, and cached prompt tokens into provider usage telemetry.
 
-For preflight context budgeting, this extension implements input-token counting with Z.ai's `/tokenizer` endpoint. The count request uses the same model, messages, tools, system prompt, and thinking-mode request mutation as chat streaming. The tokenizer path does not add streaming-only options such as `tool_stream`.
+For preflight context budgeting, this extension implements input-token counting with Z.ai's `/tokenizer` endpoint. By default chat traffic uses the GLM Coding Plan endpoint, while token counting uses Z.ai's general API tokenizer base URL. Override `tokenizer_base_url` or `ZAI_TOKENIZER_BASE_URL` if your deployment requires a different tokenizer endpoint.
+
+The count request uses the same model, messages, tools, system prompt, and thinking-mode request mutation as chat streaming. The tokenizer path does not add streaming-only options such as `tool_stream`. Tool result messages are converted into tokenizer-supported text messages so conversations after tool execution remain countable.
 
 Tokenizer counts are reported as input tokens with source `tokenizer`; output tokens are not estimated during preflight counting. If `/tokenizer` fails or returns a malformed response, `CountTokens` returns that error instead of falling back to a heuristic count.
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/weave-agent/weave/sdk"
 	"github.com/weave-agent/weave/sdk/model"
@@ -18,12 +19,16 @@ import (
 	openaicompat "github.com/weave-agent/weave/utils/openaicompat"
 )
 
-const maxTokenizerBodySize = 64 * 1024
+const (
+	defaultCountBaseURL  = "https://api.z.ai/api/paas/v4"
+	maxTokenizerBodySize = 64 * 1024
+)
 
 // ZaiConfig holds per-provider configuration for the Z.ai provider.
 type ZaiConfig struct {
-	Model   string `json:"model" default:"glm-5.1" env:"ZAI_MODEL" description:"Model name"`
-	BaseURL string `json:"base_url" default:"https://api.z.ai/api/coding/paas/v4" env:"ZAI_BASE_URL" description:"API base URL"`
+	Model            string `json:"model" default:"glm-5.1" env:"ZAI_MODEL" description:"Model name"`
+	BaseURL          string `json:"base_url" default:"https://api.z.ai/api/coding/paas/v4" env:"ZAI_BASE_URL" description:"API base URL"`
+	TokenizerBaseURL string `json:"tokenizer_base_url" default:"https://api.z.ai/api/paas/v4" env:"ZAI_TOKENIZER_BASE_URL" description:"Tokenizer API base URL"`
 }
 
 // AuthConfig holds authentication credentials for the Z.ai provider.
@@ -32,8 +37,9 @@ type AuthConfig struct {
 }
 
 type provider struct {
-	client *http.Client
-	config openaicompat.ProviderConfig
+	client           *http.Client
+	config           openaicompat.ProviderConfig
+	tokenizerBaseURL string
 }
 
 type tokenizerResponse struct {
@@ -61,7 +67,8 @@ func init() {
 		}
 
 		return &provider{
-			client: client,
+			client:           client,
+			tokenizerBaseURL: zc.TokenizerBaseURL,
 			config: openaicompat.ProviderConfig{
 				BaseURL:     zc.BaseURL,
 				APIKey:      a.APIKey,
@@ -98,7 +105,7 @@ func (p *provider) CountTokens(ctx context.Context, req sdk.ProviderRequest, opt
 		mdl = p.config.Model
 	}
 
-	messages := openaicompat.ConvertMessages(req.Messages)
+	messages := convertTokenizerMessages(req.Messages)
 
 	if req.SystemPrompt != "" {
 		sysMsg := openaicompat.ChatMessage{Role: "system", Content: req.SystemPrompt}
@@ -171,7 +178,12 @@ func (p *provider) doTokenizerRequestWithRetry(ctx context.Context, reqBody []by
 }
 
 func (p *provider) doTokenizerRequest(ctx context.Context, reqBody []byte) ([]byte, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.config.BaseURL+"/tokenizer", bytes.NewReader(reqBody))
+	tokenizerBaseURL := p.tokenizerBaseURL
+	if tokenizerBaseURL == "" {
+		tokenizerBaseURL = defaultCountBaseURL
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(tokenizerBaseURL, "/")+"/tokenizer", bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("zai: create tokenizer request: %w", err)
 	}
@@ -217,6 +229,46 @@ func (p *provider) doTokenizerRequest(ctx context.Context, reqBody []byte) ([]by
 		Message:    fmt.Sprintf("status %d: %s", resp.StatusCode, string(respBody)),
 		Body:       string(respBody),
 	}
+}
+
+func convertTokenizerMessages(msgs []sdk.Message) []openaicompat.ChatMessage {
+	var result []openaicompat.ChatMessage
+
+	for _, msg := range msgs {
+		switch msg.Role {
+		case sdk.RoleUser:
+			result = append(result, openaicompat.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprint(msg.Content),
+			})
+		case sdk.RoleAssistant:
+			var content string
+			if msg.Content != nil {
+				content = fmt.Sprint(msg.Content)
+			}
+
+			if content != "" {
+				result = append(result, openaicompat.ChatMessage{
+					Role:    "assistant",
+					Content: content,
+				})
+			}
+
+			for _, tc := range msg.ToolCalls {
+				result = append(result, openaicompat.ChatMessage{
+					Role:    "assistant",
+					Content: fmt.Sprintf("tool_call %s %s %v", tc.ID, tc.Name, tc.Arguments),
+				})
+			}
+		case sdk.RoleToolResult:
+			result = append(result, openaicompat.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprint(msg.Content),
+			})
+		}
+	}
+
+	return result
 }
 
 func tokenizerErrorType(code int) openaicompat.ErrorType {

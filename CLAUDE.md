@@ -11,4 +11,4 @@ Production provider traffic must use the resolved `*http.Client`; do not create 
 
 Preserve Z.ai-specific request behavior: include `tool_stream: true`, and when thinking is enabled set `enable_thinking` and remove `reasoning_effort`.
 
-`CountTokens` calls `${BaseURL}/tokenizer` with auth and extra headers, applies the shared thinking request mutation, and omits streaming-only request fields such as `tool_stream`.
+`CountTokens` calls `${TokenizerBaseURL}/tokenizer` with auth and extra headers, applies the shared thinking request mutation, and omits streaming-only request fields such as `tool_stream`. Tool result messages are converted to tokenizer-supported text messages before calling the endpoint.

@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const countBaseURLSetting = "tokenizer_" + "base_url"
+
 type stubConfig struct {
 	providers map[string]map[string]any
 	sdk.NoopConfig
@@ -57,7 +59,8 @@ func newTestProvider(server *httptest.Server, modelName string) *provider {
 	retryConfig := retry.DefaultConfig()
 
 	return &provider{
-		client: server.Client(),
+		client:           server.Client(),
+		tokenizerBaseURL: server.URL,
 		config: openaicompat.ProviderConfig{
 			BaseURL:     server.URL,
 			APIKey:      "test-key",
@@ -530,6 +533,89 @@ func TestCountTokens_UsesTokenizerEndpoint(t *testing.T) {
 	assert.InDelta(t, 0.95, count.Confidence, 0.0001)
 }
 
+func TestCountTokens_UsesConfiguredTokenizerBaseURL(t *testing.T) {
+	var chatRequests int
+
+	var tokenizerRequests int
+
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatRequests++
+
+		http.NotFound(w, r)
+	}))
+	defer chatServer.Close()
+
+	tokenizerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenizerRequests++
+
+		assert.Equal(t, "/tokenizer", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":31,"total_tokens":31}}`)
+	}))
+	defer tokenizerServer.Close()
+
+	p := &provider{
+		client:           tokenizerServer.Client(),
+		tokenizerBaseURL: tokenizerServer.URL,
+		config: openaicompat.ProviderConfig{
+			BaseURL: chatServer.URL,
+			APIKey:  "test-key",
+			Model:   "glm-5.1",
+		},
+	}
+
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 31, count.InputTokens)
+	assert.Zero(t, chatRequests)
+	assert.Equal(t, 1, tokenizerRequests)
+}
+
+func TestCountTokens_ConvertsToolMessagesForTokenizer(t *testing.T) {
+	var receivedBody map[string]any
+
+	var decodeErr error
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeErr = json.NewDecoder(r.Body).Decode(&receivedBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":55,"total_tokens":55}}`)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{
+			sdk.NewUserMessage("run ls"),
+			{
+				Role: sdk.RoleAssistant,
+				ToolCalls: []sdk.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "bash",
+						Arguments: map[string]any{"command": "ls"},
+					},
+				},
+			},
+			sdk.NewToolResultMessage("call_1", "bash", "file.txt", false),
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, decodeErr)
+	require.IsType(t, []any{}, receivedBody["messages"])
+	messages := receivedBody["messages"].([]any)
+	require.Len(t, messages, 3)
+	assert.Equal(t, "user", messages[0].(map[string]any)["role"])
+	assert.Equal(t, "assistant", messages[1].(map[string]any)["role"])
+	assert.Equal(t, "user", messages[2].(map[string]any)["role"])
+	assert.Equal(t, 55, count.InputTokens)
+}
+
 func TestCountTokens_ReturnsErrorWhenPromptTokensMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -836,6 +922,7 @@ func TestProviderInit_DefaultConfigWorks(t *testing.T) {
 		Jitter:     retry.JitterFull,
 	}, *p.config.RetryConfig)
 	assert.Equal(t, "https://api.z.ai/api/coding/paas/v4", p.config.BaseURL)
+	assert.Equal(t, "https://api.z.ai/api/paas/v4", p.tokenizerBaseURL)
 	assert.Equal(t, "test-key", p.config.APIKey)
 	assert.Equal(t, "glm-5.1", p.config.Model)
 	assert.Equal(t, true, p.config.ExtraBody["tool_stream"])
@@ -850,8 +937,9 @@ func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
 	cfg := stubConfig{
 		providers: map[string]map[string]any{
 			"zai": {
-				"model":    "glm-custom",
-				"base_url": "https://example.test/api",
+				"model":             "glm-custom",
+				"base_url":          "https://example.test/api",
+				countBaseURLSetting: "https://tokenizer.example.test/api",
 				"http": map[string]any{
 					"tls_handshake_timeout":   "1500ms",
 					"response_header_timeout": "2s",
@@ -889,6 +977,7 @@ func TestProviderInit_WithCustomHTTPAndRetryConfig(t *testing.T) {
 	assert.Equal(t, retry.JitterNone, p.config.RetryConfig.Jitter)
 
 	assert.Equal(t, "https://example.test/api", p.config.BaseURL)
+	assert.Equal(t, "https://tokenizer.example.test/api", p.tokenizerBaseURL)
 	assert.Equal(t, "test-key", p.config.APIKey)
 	assert.Equal(t, "glm-custom", p.config.Model)
 	assert.Equal(t, true, p.config.ExtraBody["tool_stream"])
@@ -926,8 +1015,9 @@ func TestProviderInit_CustomRetryConfigUsedByStream(t *testing.T) {
 	cfg := stubConfig{
 		providers: map[string]map[string]any{
 			"zai": {
-				"model":    "glm-5.1",
-				"base_url": server.URL,
+				"model":             "glm-5.1",
+				"base_url":          server.URL,
+				countBaseURLSetting: server.URL,
 				"retry": map[string]any{
 					"max_retries": 0,
 					"base_delay":  "1ms",
@@ -966,8 +1056,9 @@ func TestProviderInit_CustomRetryConfigUsedByCountTokens(t *testing.T) {
 	cfg := stubConfig{
 		providers: map[string]map[string]any{
 			"zai": {
-				"model":    "glm-5.1",
-				"base_url": server.URL,
+				"model":             "glm-5.1",
+				"base_url":          server.URL,
+				countBaseURLSetting: server.URL,
 				"retry": map[string]any{
 					"max_retries": 0,
 					"base_delay":  "1ms",

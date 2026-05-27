@@ -553,24 +553,33 @@ func TestCountTokens_ReturnsErrorBeforeRequestWhenModelUnsupported(t *testing.T)
 	assert.Zero(t, requests)
 }
 
-func TestCountTokens_ReturnsErrorBeforeRequestWhenTokenizerModelUnregistered(t *testing.T) {
-	requests := 0
+func TestCountTokens_UsesTokenizerEndpointForGLM46V(t *testing.T) {
+	var receivedModel string
+
+	var decodeErr error
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		var receivedBody map[string]any
 
-		http.Error(w, "unexpected request", http.StatusInternalServerError)
+		decodeErr = json.NewDecoder(r.Body).Decode(&receivedBody)
+		if decodeErr == nil {
+			receivedModel, _ = receivedBody["model"].(string)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":37,"total_tokens":37}}`)
 	}))
 	defer server.Close()
 
 	p := newTestProvider(server, "glm-4.6v")
-	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
 
-	assert.Contains(t, err.Error(), `tokenizer does not support model "glm-4.6v"`)
-	assert.Zero(t, requests)
+	require.NoError(t, decodeErr)
+	assert.Equal(t, "glm-4.6v", receivedModel)
+	assert.Equal(t, 37, count.InputTokens)
 }
 
 func TestCountTokens_UsesConfiguredTokenizerBaseURL(t *testing.T) {
@@ -614,21 +623,18 @@ func TestCountTokens_UsesConfiguredTokenizerBaseURL(t *testing.T) {
 	assert.Equal(t, 1, tokenizerRequests)
 }
 
-func TestCountTokens_ConvertsToolMessagesForTokenizer(t *testing.T) {
-	var receivedBody map[string]any
-
-	var decodeErr error
+func TestCountTokens_ReturnsErrorBeforeRequestForToolHistory(t *testing.T) {
+	requests := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decodeErr = json.NewDecoder(r.Body).Decode(&receivedBody)
+		requests++
 
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":55,"total_tokens":55}}`)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
 	p := newTestProvider(server, "glm-4.6")
-	count, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
 		Messages: []sdk.Message{
 			sdk.NewUserMessage("run ls"),
 			{
@@ -644,18 +650,33 @@ func TestCountTokens_ConvertsToolMessagesForTokenizer(t *testing.T) {
 			sdk.NewToolResultMessage("call_1", "bash", "file.txt", false),
 		},
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
 
-	require.NoError(t, decodeErr)
-	require.IsType(t, []any{}, receivedBody["messages"])
-	messages := receivedBody["messages"].([]any)
-	require.Len(t, messages, 3)
-	assert.Equal(t, "user", messages[0].(map[string]any)["role"])
-	assert.Equal(t, "assistant", messages[1].(map[string]any)["role"])
-	assert.Equal(t, `tool_call {"id":"call_1","name":"bash","arguments":{"command":"ls"}}`, messages[1].(map[string]any)["content"])
-	assert.Equal(t, "user", messages[2].(map[string]any)["role"])
-	assert.Equal(t, `tool_result {"tool_call_id":"call_1","tool_name":"bash","content":"\u003ctool_output name=\"bash\"\u003e\nfile.txt\n\u003c/tool_output\u003e"}`, messages[2].(map[string]any)["content"])
-	assert.Equal(t, 55, count.InputTokens)
+	assert.Contains(t, err.Error(), "tokenizer does not support prior assistant tool calls")
+	assert.Zero(t, requests)
+}
+
+func TestCountTokens_ReturnsErrorBeforeRequestForToolResult(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-4.6")
+	_, err := p.CountTokens(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{
+			sdk.NewUserMessage("run ls"),
+			sdk.NewToolResultMessage("call_1", "bash", "file.txt", false),
+		},
+	})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "tokenizer does not support prior tool result messages")
+	assert.Zero(t, requests)
 }
 
 func TestCountTokens_ReturnsErrorBeforeRequestWhenMessagesAreNotCountable(t *testing.T) {

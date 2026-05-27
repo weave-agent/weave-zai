@@ -25,8 +25,9 @@ const (
 )
 
 var supportedTokenizerModels = map[string]struct{}{
-	"glm-4.5": {},
-	"glm-4.6": {},
+	"glm-4.5":  {},
+	"glm-4.6":  {},
+	"glm-4.6v": {},
 }
 
 // ZaiConfig holds per-provider configuration for the Z.ai provider.
@@ -260,6 +261,10 @@ func convertTokenizerMessages(msgs []sdk.Message) ([]openaicompat.ChatMessage, e
 				Content: fmt.Sprint(msg.Content),
 			})
 		case sdk.RoleAssistant:
+			if len(msg.ToolCalls) > 0 {
+				return nil, errors.New("zai: tokenizer does not support prior assistant tool calls")
+			}
+
 			var content string
 			if msg.Content != nil {
 				content = fmt.Sprint(msg.Content)
@@ -272,27 +277,8 @@ func convertTokenizerMessages(msgs []sdk.Message) ([]openaicompat.ChatMessage, e
 				})
 			}
 
-			for _, tc := range msg.ToolCalls {
-				content, err := tokenizerToolCallContent(tc)
-				if err != nil {
-					return nil, err
-				}
-
-				result = append(result, openaicompat.ChatMessage{
-					Role:    "assistant",
-					Content: content,
-				})
-			}
 		case sdk.RoleToolResult:
-			content, err := tokenizerToolResultContent(msg)
-			if err != nil {
-				return nil, err
-			}
-
-			result = append(result, openaicompat.ChatMessage{
-				Role:    "user",
-				Content: content,
-			})
+			return nil, errors.New("zai: tokenizer does not support prior tool result messages")
 		default:
 			return nil, fmt.Errorf("zai: unsupported tokenizer message role %q", msg.Role)
 		}
@@ -315,46 +301,6 @@ func tokenizerModelSupported(modelName string) bool {
 	_, ok := supportedTokenizerModels[modelName]
 
 	return ok
-}
-
-func tokenizerToolCallContent(tc sdk.ToolCall) (string, error) {
-	payload := struct {
-		ID        string `json:"id,omitempty"`
-		Name      string `json:"name"`
-		Arguments any    `json:"arguments,omitempty"`
-	}{
-		ID:        tc.ID,
-		Name:      tc.Name,
-		Arguments: tc.Arguments,
-	}
-
-	content, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("zai: marshal tokenizer tool call: %w", err)
-	}
-
-	return "tool_call " + string(content), nil
-}
-
-func tokenizerToolResultContent(msg sdk.Message) (string, error) {
-	payload := struct {
-		ToolCallID string `json:"tool_call_id,omitempty"`
-		ToolName   string `json:"tool_name,omitempty"`
-		IsError    bool   `json:"is_error,omitempty"`
-		Content    any    `json:"content"`
-	}{
-		ToolCallID: msg.ToolCallID,
-		ToolName:   msg.ToolName,
-		IsError:    msg.IsError,
-		Content:    msg.Content,
-	}
-
-	content, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("zai: marshal tokenizer tool result: %w", err)
-	}
-
-	return "tool_result " + string(content), nil
 }
 
 func tokenizerErrorType(code int) openaicompat.ErrorType {

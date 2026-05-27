@@ -49,12 +49,12 @@
 ## Implementation Steps
 
 ### Task 1: Consume shared OpenAI-compatible usage improvements
-- [ ] update dependency on root repo `utils/openaicompat` cached-token parsing changes
-- [ ] verify `sdk.ProviderUsage.CacheReadTokens` is populated when Z.ai sends compatible details
-- [ ] preserve `tool_stream` request behavior
-- [ ] write tests for normal usage event mapping
-- [ ] write tests for cached-token usage detail when provider sends it
-- [ ] run `go test ./...` - must pass before next task
+- [x] update dependency on root repo `utils/openaicompat` cached-token parsing changes (already on `github.com/weave-agent/weave v0.0.11`, which includes cached-token parsing)
+- [x] verify `sdk.ProviderUsage.CacheReadTokens` is populated when Z.ai sends compatible details
+- [x] preserve `tool_stream` request behavior
+- [x] write tests for normal usage event mapping
+- [x] write tests for cached-token usage detail when provider sends it
+- [x] run `go test ./...` - must pass before next task
 
 ### Task 2: Evaluate provider count-token support
 - [ ] verify whether Z.ai exposes a compatible token count endpoint or deterministic tokenizer guidance

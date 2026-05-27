@@ -63,6 +63,9 @@ func newTestProvider(server *httptest.Server, model string) *provider {
 			APIKey:      "test-key",
 			Model:       model,
 			RetryConfig: &retryConfig,
+			ExtraBody: map[string]any{
+				"tool_stream": true,
+			},
 		},
 	}
 }
@@ -370,6 +373,93 @@ func TestStream_WithTools(t *testing.T) {
 
 	require.Len(t, receivedBody.Tools, 1)
 	assert.Equal(t, "bash", receivedBody.Tools[0].Function.Name)
+}
+
+func TestStream_SendsToolStreamExtraBody(t *testing.T) {
+	var receivedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseStream(
+			sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+			sseChunk(openaicompat.ChunkDelta{}, new("stop")),
+			sseDone(),
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	ch, err := p.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+	collectEvents(t, ch)
+
+	assert.Equal(t, true, receivedBody["tool_stream"])
+}
+
+func TestStream_UsageEventMapping(t *testing.T) {
+	stream := sseStream(
+		sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+		`data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":17,"completion_tokens":5}}`+"\n",
+		sseDone(),
+	)
+
+	server := setupServer(stream)
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	ch, err := p.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+
+	events := collectEvents(t, ch)
+
+	var usages []sdk.ProviderUsage
+	for _, e := range events {
+		if e.Type == sdk.ProviderEventUsage {
+			usages = append(usages, e.Content.(sdk.ProviderUsage))
+		}
+	}
+
+	require.Len(t, usages, 1)
+	assert.Equal(t, 17, usages[0].InputTokens)
+	assert.Equal(t, 5, usages[0].OutputTokens)
+	assert.Zero(t, usages[0].CacheReadTokens)
+}
+
+func TestStream_CachedTokenUsageDetail(t *testing.T) {
+	stream := sseStream(
+		sseChunk(openaicompat.ChunkDelta{Content: "ok"}, nil),
+		`data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":24,"completion_tokens":6,"prompt_tokens_details":{"cached_tokens":19}}}`+"\n",
+		sseDone(),
+	)
+
+	server := setupServer(stream)
+	defer server.Close()
+
+	p := newTestProvider(server, "glm-5.1")
+	ch, err := p.Stream(context.Background(), sdk.ProviderRequest{
+		Messages: []sdk.Message{sdk.NewUserMessage("hi")},
+	})
+	require.NoError(t, err)
+
+	events := collectEvents(t, ch)
+
+	var usages []sdk.ProviderUsage
+	for _, e := range events {
+		if e.Type == sdk.ProviderEventUsage {
+			usages = append(usages, e.Content.(sdk.ProviderUsage))
+		}
+	}
+
+	require.Len(t, usages, 1)
+	assert.Equal(t, 24, usages[0].InputTokens)
+	assert.Equal(t, 6, usages[0].OutputTokens)
+	assert.Equal(t, 19, usages[0].CacheReadTokens)
 }
 
 func TestStream_MultipleToolCalls(t *testing.T) {
